@@ -1,45 +1,65 @@
 const { chromium } = require("playwright");
 const fs = require("fs");
-const path = require("path");
 const EventEmitter = require("events");
 const sentEmailManager = require("../../utils/SentEmailManager");
+const { loadSettings, readEmailQueue, appendToQueue, ensureDataDir, EMAILS_FILE, CHROME_PROFILE_DIR } = require("../lib/config");
 
-const DATA_DIR = path.join(__dirname, "../../Data");
-const EMAILS_FILE_PATH = path.join(DATA_DIR, "Emails.txt");
+const MAX_CYCLES = 25;
+const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
 class ScraperService extends EventEmitter {
   constructor() {
     super();
-    this.status = "idle"; // idle | running | done | error
+    this.status = "idle";
     this.stats = { totalEmails: 0, newEmails: 0, cycles: 0 };
-    this.browser = null;
+    this.context = null;
     this.stopping = false;
   }
 
   log(message) {
-    const line = `[${new Date().toLocaleTimeString()}] ${message}`;
-    this.emit("log", line);
+    this.emit("log", `[${new Date().toLocaleTimeString()}] ${message}`);
+    this.emit("status", this.getStatus());
   }
 
-  async start({ searchRole = "QA role", linkedInCookie } = {}) {
-    if (this.status === "running") {
-      throw new Error("Scraper is already running");
-    }
+  async start({ searchRole } = {}) {
+    if (this.status === "running") throw new Error("Scraper is already running");
+
+    const settings = loadSettings();
+    const role = searchRole || settings.searchRole;
 
     this.status = "running";
     this.stopping = false;
     this.stats = { totalEmails: 0, newEmails: 0, cycles: 0 };
 
     try {
-      await this._run(searchRole, linkedInCookie);
+      await this._run(role);
       this.status = this.stopping ? "idle" : "done";
+
+      if (!this.stopping && settings.autoSendAfterScrape && this.stats.newEmails > 0) {
+        this.status = "sending";
+        this.log("Auto-sending emails...");
+        this.emit("status", this.getStatus());
+        const emailService = require("./EmailService");
+        const onLog = (msg) => this.emit("log", msg);
+        emailService.on("log", onLog);
+        try {
+          const results = await emailService.sendAll();
+          this.log(`Sent: ${results.sent}, Failed: ${results.failed}`);
+        } catch (e) {
+          this.log(`Auto-send error: ${e.message}`);
+        } finally {
+          emailService.off("log", onLog);
+          this.status = "done";
+          this.emit("status", this.getStatus());
+        }
+      }
     } catch (err) {
       this.status = "error";
       this.log(`Error: ${err.message}`);
     } finally {
-      if (this.browser) {
-        await this.browser.close().catch(() => {});
-        this.browser = null;
+      if (this.context) {
+        await this.context.close().catch(() => {});
+        this.context = null;
       }
     }
   }
@@ -48,188 +68,124 @@ class ScraperService extends EventEmitter {
     if (this.status !== "running") return;
     this.stopping = true;
     this.log("Stop requested...");
-    if (this.browser) {
-      await this.browser.close().catch(() => {});
-      this.browser = null;
+    if (this.context) {
+      await this.context.close().catch(() => {});
+      this.context = null;
     }
     this.status = "idle";
     this.log("Scraper stopped.");
   }
 
-  async _run(searchRole, linkedInCookie) {
-    if (!linkedInCookie) {
-      throw new Error(
-        "LinkedIn cookie (li_at) not configured. Go to Settings and paste your li_at cookie value."
-      );
-    }
+  async _run(searchRole) {
+    fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
 
-    this.log("Launching headless browser...");
-
-    this.browser = await chromium.launch({
-      headless: true,
-      args: ["--disable-blink-features=AutomationControlled"],
+    const launchOpts = (headless) => ({
+      headless: false,
+      channel: "chrome",
+      args: [
+        "--disable-blink-features=AutomationControlled",
+        ...(headless ? ["--headless=new"] : ["--start-maximized"]),
+      ],
     });
 
-    const context = await this.browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      viewport: { width: 1920, height: 1080 },
-    });
+    this.log("Launching browser (headless)...");
+    this.context = await chromium.launchPersistentContext(CHROME_PROFILE_DIR, launchOpts(true));
+    let page = this.context.pages()[0] || await this.context.newPage();
 
-    // Inject LinkedIn session cookie
-    await context.addCookies([
-      {
-        name: "li_at",
-        value: linkedInCookie,
-        domain: ".linkedin.com",
-        path: "/",
-        httpOnly: true,
-        secure: true,
-        sameSite: "None",
-      },
-    ]);
-
-    const page = await context.newPage();
-
-    // 1. Verify session
-    this.log("Checking LinkedIn session with cookie...");
+    this.log("Checking LinkedIn session...");
     sentEmailManager.cleanup();
-
-    await page.goto("https://www.linkedin.com/feed/", {
-      waitUntil: "load",
-      timeout: 30000,
-    });
+    await page.goto("https://www.linkedin.com/feed/", { waitUntil: "load" });
 
     if (page.url().includes("login") || page.url().includes("checkpoint")) {
-      throw new Error(
-        "LinkedIn cookie is invalid or expired. Please update your li_at cookie in Settings."
-      );
-    }
+      this.log("Login required — reopening browser in visible mode...");
+      await this.context.close();
 
-    this.log("Logged in successfully via cookie.");
+      this.context = await chromium.launchPersistentContext(CHROME_PROFILE_DIR, launchOpts(false));
+      page = this.context.pages()[0] || await this.context.newPage();
+      await page.goto("https://www.linkedin.com/feed/", { waitUntil: "load" });
+
+      this.log("Please log in manually in the browser window.");
+      this.log("Waiting up to 5 minutes...");
+      await page.waitForURL("**/feed/**", { timeout: 300000 });
+      this.log("Login successful! Session saved. Next run will be headless.");
+
+      await this.context.close();
+      this.context = await chromium.launchPersistentContext(CHROME_PROFILE_DIR, launchOpts(true));
+      page = this.context.pages()[0] || await this.context.newPage();
+      await page.goto("https://www.linkedin.com/feed/", { waitUntil: "load" });
+    } else {
+      this.log("Already logged in — running headless.");
+    }
 
     if (this.stopping) return;
 
-    // 2. Search & filter
     const searchUrl = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(searchRole)}&datePosted=%5B%22past-24h%22%5D&origin=FACETED_SEARCH`;
-
     this.log(`Searching for: "${searchRole}" (Past 24h)...`);
     await page.goto(searchUrl, { waitUntil: "load" });
-    await page
-      .waitForSelector('[data-testid="lazy-column"]', { timeout: 15000 })
-      .catch(() => {});
+    await page.waitForSelector('[data-testid="lazy-column"]', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
-    // Close banners
-    const mainDismiss = page
-      .locator(
-        'button[aria-label="Dismiss"], .artdeco-notification-badge__dismiss'
-      )
-      .first();
-    if (await mainDismiss.isVisible()) {
-      await mainDismiss.click({ force: true }).catch(() => {});
-    }
+    const dismiss = page.locator('button[aria-label="Dismiss"], .artdeco-notification-badge__dismiss').first();
+    if (await dismiss.isVisible()) await dismiss.click({ force: true }).catch(() => {});
 
-    // 3. Extraction
-    const discoveredEmails = new Set();
-    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    if (!fs.existsSync(EMAILS_FILE_PATH))
-      fs.writeFileSync(EMAILS_FILE_PATH, "");
-
-    fs.readFileSync(EMAILS_FILE_PATH, "utf-8")
-      .split("\n")
-      .forEach((e) => {
-        if (e.trim()) discoveredEmails.add(e.trim());
-      });
-
+    const discoveredEmails = new Set(readEmailQueue());
+    ensureDataDir();
     this.stats.totalEmails = discoveredEmails.size;
 
     let lastProcessedIndex = 0;
-    let idleCycles = 0;
-    const MAX_IDLE_CYCLES = 5;
 
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < MAX_CYCLES; i++) {
       if (this.stopping) return;
 
       this.stats.cycles = i + 1;
-      this.log(`--- Cycle ${i + 1}/25 ---`);
+      this.log(`Cycle ${i + 1}/${MAX_CYCLES}`);
 
-      const posts = page.locator(
-        'div[data-testid="lazy-column"] > div div[role="listitem"]'
-      );
-      const currentCount = await posts.count();
-      this.log(`Total posts visible: ${currentCount}`);
+      const posts = page.locator('div[data-testid="lazy-column"] > div div[role="listitem"]');
+      const count = await posts.count();
 
-      let newEmailsInThisCycle = 0;
+      let newInCycle = 0;
 
-      for (let j = lastProcessedIndex; j < currentCount; j++) {
+      for (let j = lastProcessedIndex; j < count; j++) {
         if (this.stopping) return;
-
         const post = posts.nth(j);
+
+        let text = "";
         try {
-          const moreBtn = post.locator(
-            '[data-testid="expandable-text-button"]'
-          );
-          if ((await moreBtn.count()) > 0 && (await moreBtn.isVisible())) {
-            await moreBtn.click({ force: true }).catch(() => {});
+          const btn = post.locator('[data-testid="expandable-text-button"]');
+          if ((await btn.count()) > 0 && (await btn.isVisible())) {
+            await btn.click({ force: true }).catch(() => {});
             await page.waitForTimeout(300);
           }
-        } catch (e) {}
+          text = await post.innerText({ timeout: 5000 });
+        } catch (e) { continue; }
 
-        const text = await post.innerText();
-        const matches = text.match(emailRegex);
+        const matches = text.match(EMAIL_REGEX);
         if (matches) {
-          matches.forEach((email) => {
-            if (
-              !discoveredEmails.has(email) &&
-              !email.includes("example.com") &&
-              !sentEmailManager.isAlreadySent(email)
-            ) {
+          for (const email of matches) {
+            if (!discoveredEmails.has(email) && !email.includes("example.com") && !sentEmailManager.isAlreadySent(email)) {
               this.log(`[FOUND] ${email}`);
               discoveredEmails.add(email);
-              newEmailsInThisCycle++;
+              newInCycle++;
               this.stats.newEmails++;
               this.stats.totalEmails++;
-              fs.appendFileSync(EMAILS_FILE_PATH, `${email}\n`);
+              appendToQueue(email);
             }
-          });
+          }
         }
       }
 
-      this.log(`New emails found in this cycle: ${newEmailsInThisCycle}`);
-      lastProcessedIndex = currentCount;
+      if (newInCycle > 0) this.log(`Found ${newInCycle} new emails`);
+      lastProcessedIndex = count;
 
-      if (newEmailsInThisCycle === 0) {
-        idleCycles++;
-        this.log(
-          `No new emails. Idle cycles: ${idleCycles}/${MAX_IDLE_CYCLES}`
-        );
-      } else {
-        idleCycles = 0;
-      }
-
-      if (idleCycles >= MAX_IDLE_CYCLES) {
-        this.log("Stopping: No new results found for several cycles.");
-        break;
-      }
-
-      this.log("Scrolling for more content...");
       await page.evaluate(() => window.scrollBy(0, 2000));
       await page.waitForTimeout(4000);
     }
 
-    this.log(
-      `Scraping complete. Found ${this.stats.newEmails} new emails (${this.stats.totalEmails} total in queue).`
-    );
+    this.log(`Scraping complete. Found ${this.stats.newEmails} new emails (${this.stats.totalEmails} total in queue).`);
   }
 
   getStatus() {
-    return {
-      status: this.status,
-      stats: { ...this.stats },
-    };
+    return { status: this.status, stats: { ...this.stats } };
   }
 }
 

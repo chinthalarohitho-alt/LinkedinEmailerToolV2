@@ -1,11 +1,8 @@
 const nodemailer = require("nodemailer");
-const fs = require("fs");
 const path = require("path");
 const EventEmitter = require("events");
 const sentEmailManager = require("../../utils/SentEmailManager");
-
-const DATA_DIR = path.join(__dirname, "../../Data");
-const EMAILS_FILE_PATH = path.join(DATA_DIR, "Emails.txt");
+const { loadSettings, readEmailQueue, removeFromQueue, loadTemplate, discoverResume } = require("../lib/config");
 
 class EmailService extends EventEmitter {
   constructor() {
@@ -14,113 +11,48 @@ class EmailService extends EventEmitter {
   }
 
   log(message) {
-    const line = `[${new Date().toLocaleTimeString()}] ${message}`;
-    this.emit("log", line);
+    this.emit("log", `[${new Date().toLocaleTimeString()}] ${message}`);
   }
 
-  _discoverResume() {
-    let resumePath = path.join(DATA_DIR, "sdet.pdf");
-    try {
-      if (fs.existsSync(DATA_DIR)) {
-        const files = fs.readdirSync(DATA_DIR);
-        const resumeFile = files.find((f) => /resume\.pdf$/i.test(f));
-        if (resumeFile) {
-          resumePath = path.join(DATA_DIR, resumeFile);
-        }
-      }
-    } catch (err) {}
-    return resumePath;
-  }
-
-  async sendAll({ emailUser, emailPass, emailSubject, emailTemplate } = {}) {
-    if (this.sending) {
-      throw new Error("Already sending emails");
-    }
-
+  async sendAll() {
+    if (this.sending) throw new Error("Already sending emails");
     this.sending = true;
     const results = { sent: 0, failed: 0, total: 0 };
 
     try {
-      const user = emailUser || process.env.EMAIL_USER;
-      const pass = emailPass || process.env.EMAIL_PASS;
+      const settings = loadSettings();
+      const { emailUser: user, emailPass: pass, emailSubject: subject } = settings;
+      if (!user || !pass) throw new Error("Email credentials not configured. Go to Settings.");
 
-      if (!user || !pass || pass === "your_google_app_password_here") {
-        throw new Error(
-          "Sender email or app password not configured. Go to Settings to set them."
-        );
-      }
+      const transporter = nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
+      const emails = readEmailQueue();
+      results.total = emails.length;
 
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: { user, pass },
-      });
+      if (emails.length === 0) { this.log("No emails to send."); return results; }
 
-      if (!fs.existsSync(EMAILS_FILE_PATH)) {
-        this.log("No emails file found.");
-        return results;
-      }
+      const body = loadTemplate();
+      const resumePath = discoverResume();
+      this.log(`Sending ${emails.length} emails...`);
 
-      const rawEmails = fs
-        .readFileSync(EMAILS_FILE_PATH, "utf-8")
-        .split("\n")
-        .map((e) => e.trim())
-        .filter((e) => e.length > 0);
-
-      const uniqueEmails = [...new Set(rawEmails)];
-      results.total = uniqueEmails.length;
-
-      if (uniqueEmails.length === 0) {
-        this.log("No emails to send.");
-        return results;
-      }
-
-      const body = emailTemplate || (process.env.EMAIL_BODY || "").replace(/\\n/g, "\n");
-      const subject = emailSubject || process.env.EMAIL_SUBJECT || "Application - QA / Software Testing Role";
-      const resumePath = this._discoverResume();
-
-      this.log(`Sending ${uniqueEmails.length} emails...`);
-
-      for (const email of uniqueEmails) {
+      for (const email of emails) {
         this.log(`Sending to: ${email}...`);
-
-        const mailOptions = {
-          from: user,
-          to: email,
-          subject,
-          text: body,
-          attachments: [
-            {
-              filename: path.basename(resumePath),
-              path: resumePath,
-            },
-          ],
-        };
-
         try {
-          await transporter.sendMail(mailOptions);
+          await transporter.sendMail({
+            from: user, to: email, subject, text: body,
+            attachments: [{ filename: path.basename(resumePath), path: resumePath }],
+          });
           this.log(`SUCCESS: Sent to ${email}`);
           results.sent++;
-
           sentEmailManager.addEmail(email);
-
-          // Remove from queue
-          const currentData = fs.readFileSync(EMAILS_FILE_PATH, "utf-8");
-          const updatedData = currentData
-            .split("\n")
-            .filter((line) => line.trim() !== email)
-            .join("\n");
-          fs.writeFileSync(EMAILS_FILE_PATH, updatedData);
+          removeFromQueue(email);
         } catch (error) {
           this.log(`FAILED: ${email} - ${error.message}`);
           results.failed++;
         }
-
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
 
-      this.log(
-        `Done. Sent: ${results.sent}, Failed: ${results.failed}`
-      );
+      this.log(`Done. Sent: ${results.sent}, Failed: ${results.failed}`);
       return results;
     } finally {
       this.sending = false;

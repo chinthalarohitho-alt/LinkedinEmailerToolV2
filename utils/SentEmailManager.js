@@ -1,79 +1,71 @@
 const fs = require("fs");
-const path = require("path");
+const { SENT_EMAILS_FILE, ensureDataDir } = require("../server/lib/config");
 
-const SENT_EMAILS_FILE = path.join(__dirname, "../Data/SentEmails.json");
 const EXPIRY_MS = 96 * 60 * 60 * 1000; // 96 hours
 
 class SentEmailManager {
   constructor() {
-    this.ensureFileExists();
+    this.cache = null;
   }
 
-  ensureFileExists() {
-    const dir = path.dirname(SENT_EMAILS_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    if (!fs.existsSync(SENT_EMAILS_FILE)) {
-      fs.writeFileSync(SENT_EMAILS_FILE, JSON.stringify({}));
-    }
-  }
-
-  readData() {
+  _load() {
+    if (this.cache) return this.cache;
     try {
-      const data = fs.readFileSync(SENT_EMAILS_FILE, "utf-8");
-      return JSON.parse(data);
+      this.cache = JSON.parse(fs.readFileSync(SENT_EMAILS_FILE, "utf-8"));
     } catch (e) {
-      console.error("Error reading SentEmails.json:", e);
-      return {};
+      this.cache = {};
     }
+    return this.cache;
   }
 
-  writeData(data) {
+  _save() {
     try {
-      fs.writeFileSync(SENT_EMAILS_FILE, JSON.stringify(data, null, 2));
-    } catch (e) {
-      console.error("Error writing SentEmails.json:", e);
-    }
+      ensureDataDir();
+      fs.writeFileSync(SENT_EMAILS_FILE, JSON.stringify(this.cache, null, 2));
+    } catch (e) {}
   }
 
-  /**
-   * Adds an email with the current timestamp.
-   */
   addEmail(email) {
-    const data = this.readData();
-    data[email] = Date.now();
-    this.writeData(data);
+    this._load();
+    this.cache[email] = Date.now();
+    this._save();
   }
 
-  /**
-   * Checks if an email was sent within the last 24 hours.
-   * Also cleans up old entries.
-   */
+  addEmails(emails) {
+    this._load();
+    const now = Date.now();
+    for (const email of emails) this.cache[email] = now;
+    this._save();
+  }
+
   isAlreadySent(email) {
-    this.cleanup(); // Auto-cleanup on check
-    const data = this.readData();
-    return !!data[email];
+    const data = this._load();
+    if (!data[email]) return false;
+    if (Date.now() - data[email] > EXPIRY_MS) {
+      delete this.cache[email];
+      return false;
+    }
+    return true;
   }
 
-  /**
-   * Removes entries older than 24 hours.
-   */
+  getSentList() {
+    const data = this._load();
+    return Object.entries(data)
+      .map(([email, timestamp]) => ({ email, sentAt: new Date(timestamp).toISOString(), timestamp }))
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }
+
   cleanup() {
-    const data = this.readData();
+    const data = this._load();
     const now = Date.now();
     let changed = false;
-
     for (const [email, timestamp] of Object.entries(data)) {
       if (now - timestamp > EXPIRY_MS) {
         delete data[email];
         changed = true;
       }
     }
-
-    if (changed) {
-      this.writeData(data);
-    }
+    if (changed) this._save();
   }
 }
 

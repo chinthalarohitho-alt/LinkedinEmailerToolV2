@@ -1,108 +1,64 @@
-# LinkedIn Scraper & Email Automator
+# LinkedIn Emailer Tool
 
-A robust tool built with Playwright and Node.js to scrape LinkedIn posts for job opportunities and automatically send application emails with resumes to discovered email addresses.
+A web-based tool to scrape LinkedIn posts for job opportunities and automatically send application emails with your resume.
 
-## Features
-
-- **Automated Login**: Securely logs into LinkedIn using credentials from environment variables.
-- **Smart Scraping**: Navigates to filtered "role" posts from the past 24 hours.
-- **Email Extraction**: Uses regex to find email addresses within post content, even handling "see more" expansions.
-- **Duplicate Prevention**: Maintains a list of processed emails to avoid sending multiple applications to the same address.
-- **Automated Outreach**: Automatically triggers `EmailSender.js` to send personalized emails with attachments via Gmail SMTP.
-
-## Key Libraries
-
-- **Playwright**: For browser automation and web scraping.
-- **Nodemailer**: For sending emails using SMTP (Gmail).
-- **Dotenv**: For managing project-specific environment variables securely.
+Built with React, Express, Playwright, and Nodemailer.
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) (v16 or higher recommended)
-- [npm](https://www.npmjs.com/)
-- A Google account with **App Password** enabled (for Gmail SMTP).
+- [Node.js](https://nodejs.org/) (v18 or higher)
+- [Google Chrome](https://www.google.com/chrome/) installed
+- Gmail account with [App Password](https://myaccount.google.com/apppasswords) (requires 2FA enabled)
 
----
+## Setup
 
-## Installation
-
-1. **Clone or Download** the project to your local machine.
-2. **Install Dependencies & Browsers**:
-   Installs core libraries and required browsers.
-
+1. **Clone the repo**
    ```bash
-   # Install all project dependencies
-   npm init -y
-
-   # Explicitly install core libraries (if needed individually)
-   npm install @playwright/test dotenv nodemailer
-
-   # Install Playwright browsers
-   npx playwright install chromium
+   git clone https://github.com/chinthalarohitho-alt/LinkedinEmailerTool.git
+   cd LinkedinEmailerTool
    ```
 
----
+2. **Install dependencies**
+   ```bash
+   npm install
+   npm install --prefix client
+   ```
 
-## Configuration
+3. **Add your resume**
 
-### 1. Environment Variables (`.env`)
+   Place your resume PDF in the `Data/` folder (e.g., `Data/resume.pdf`).
 
-1. **Rename** `.env.example` to `.env`.
-2. **Populate** the `.env` file with your credentials:
+## Starting the App
 
-```env
-# LinkedIn Credentials
-LINKEDIN_USERNAME=your_linkedin_email@example.com
-LINKEDIN_PASSWORD=your_linkedin_password
+### Option 1: Double-click launcher
 
-# Gmail SMTP Credentials
-EMAIL_USER=your_gmail@gmail.com
-EMAIL_PASS=your_google_app_password # 16-character code from Google Account Security
+| OS      | File                              |
+|---------|-----------------------------------|
+| macOS   | `Click Me to Start (Mac).command` |
+| Windows | `Click Me to Start (Windows).bat` |
 
-# Customize Search & Email
-LINKEDIN_SEARCH_ROLE="QA role" # Keyword used for LinkedIn search
-EMAIL_SUBJECT="Application – QA / Software Testing Role"
-```
+Double-click the file. It installs dependencies if needed, starts the app, and opens your browser to `http://localhost:5173`.
 
-> [!IMPORTANT]
-> For `EMAIL_PASS`, do NOT use your regular Gmail password. You must generate an **App Password** in your Google Account settings under Security > 2-Step Verification.
-
-### 2. Data Files
-
-Ensure the following files exist in the `Data/` directory:
-
-- `Data/sdet.pdf` OR any file ending in `resume.pdf`: Your resume file.
-- `Data/EmailTemplate.txt`: The body of the email you want to send. (One is provided as a template).
-- `Data/Emails.txt`: Automatically managed by the system to store discovered emails.
-
----
-
-### Run with Persistent Chrome (Best for bypassing CAPTCHAs)
-
-This mode uses your actual Google Chrome profile, which means you're already logged in and look 100% human to LinkedIn.
-
-> [!WARNING]
-> You **MUST close all Google Chrome windows** completely before running this command.
+### Option 2: Terminal
 
 ```bash
-# Run the persistent scraper
-npm run scrape
+npm run dev
 ```
 
-### Run Email Sender Only
+Then open `http://localhost:5173` in your browser.
 
-If you already have a list of emails in `Data/Emails.txt` and want to send applications without scraping:
+## Stopping the App
 
-```bash
-npm run send
-```
+- **If launched via double-click** — close the terminal window, or press `Ctrl + C` in it.
+- **If launched via terminal** — press `Ctrl + C` in the terminal.
 
----
+## First Run
 
-## Project Structure
+1. Go to **Settings** tab and enter your Gmail address, App Password, email subject, and email body template.
+2. Go to **Scraper** tab and click **Start Scraping**. A Chrome window will open for LinkedIn login on the first run. Log in manually — your session is saved for future runs (headless).
+3. Scraped emails appear in the **Dashboard**. Click **Send All** to send emails, or enable **Auto-send** in Settings.
+4. Optionally, set up a **Cron Job** tab schedule for automatic scraping.
 
-- `test/LinkedInUnified.spec.ts`: The main scraping script using Playwright.
-- `EmailSender.js`: Handles sending emails using `nodemailer`.
-- `Data/`: Directory for persistent data (emails, resume, template).
-- `.env`: Sensitive configuration and credentials.
-- `playwright.config.ts`: Configuration for Playwright execution.
+## Contact
+
+For queries or support, reach out at **chinthalarohitho@gmail.com**.

@@ -1,66 +1,46 @@
 const express = require("express");
 const router = express.Router();
-const fs = require("fs");
-const path = require("path");
+const { readEmailQueue, removeFromQueue, appendToQueue } = require("../lib/config");
 const emailService = require("../services/EmailService");
+const sentEmailManager = require("../../utils/SentEmailManager");
 
-const EMAILS_FILE_PATH = path.join(__dirname, "../../Data/Emails.txt");
-const SENT_EMAILS_FILE = path.join(__dirname, "../../Data/SentEmails.json");
-
-// Get queued emails
 router.get("/", (req, res) => {
-  try {
-    if (!fs.existsSync(EMAILS_FILE_PATH)) {
-      return res.json({ emails: [] });
-    }
-    const emails = fs
-      .readFileSync(EMAILS_FILE_PATH, "utf-8")
-      .split("\n")
-      .map((e) => e.trim())
-      .filter((e) => e.length > 0);
-    res.json({ emails: [...new Set(emails)] });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ emails: readEmailQueue() });
 });
 
-// Delete an email from queue
+router.post("/add", (req, res) => {
+  const { emails } = req.body;
+  if (!emails || !Array.isArray(emails) || emails.length === 0) {
+    return res.status(400).json({ error: "Provide an array of emails" });
+  }
+  const existing = new Set(readEmailQueue());
+  const added = [];
+  for (const email of emails) {
+    const trimmed = email.trim().toLowerCase();
+    if (trimmed && trimmed.includes("@") && !existing.has(trimmed)) {
+      appendToQueue(trimmed);
+      existing.add(trimmed);
+      added.push(trimmed);
+    }
+  }
+  res.json({ added: added.length, emails: added });
+});
+
 router.delete("/:email", (req, res) => {
-  try {
-    const emailToRemove = decodeURIComponent(req.params.email);
-    if (!fs.existsSync(EMAILS_FILE_PATH)) {
-      return res.status(404).json({ error: "No emails file" });
-    }
-    const currentData = fs.readFileSync(EMAILS_FILE_PATH, "utf-8");
-    const updatedData = currentData
-      .split("\n")
-      .filter((line) => line.trim() !== emailToRemove)
-      .join("\n");
-    fs.writeFileSync(EMAILS_FILE_PATH, updatedData);
-    res.json({ message: `Removed ${emailToRemove}` });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  const email = decodeURIComponent(req.params.email);
+  removeFromQueue(email);
+  res.json({ message: `Removed ${email}` });
 });
 
-// Send all queued emails
 router.post("/send", async (req, res) => {
-  if (emailService.sending) {
-    return res.status(409).json({ error: "Already sending emails" });
-  }
+  if (emailService.sending) return res.status(409).json({ error: "Already sending" });
 
-  // Collect logs for the response
   const logs = [];
   const onLog = (msg) => logs.push(msg);
   emailService.on("log", onLog);
 
   try {
-    const results = await emailService.sendAll({
-      emailUser: req.cookies.email_user,
-      emailPass: req.cookies.email_pass,
-      emailSubject: req.cookies.email_subject,
-      emailTemplate: req.cookies.email_template,
-    });
+    const results = await emailService.sendAll();
     emailService.off("log", onLog);
     res.json({ ...results, logs });
   } catch (err) {
@@ -69,20 +49,9 @@ router.post("/send", async (req, res) => {
   }
 });
 
-// Get sent email history
 router.get("/sent", (req, res) => {
   try {
-    if (!fs.existsSync(SENT_EMAILS_FILE)) {
-      return res.json({ sent: [] });
-    }
-    const data = JSON.parse(fs.readFileSync(SENT_EMAILS_FILE, "utf-8"));
-    const sent = Object.entries(data).map(([email, timestamp]) => ({
-      email,
-      sentAt: new Date(timestamp).toISOString(),
-      timestamp,
-    }));
-    sent.sort((a, b) => b.timestamp - a.timestamp);
-    res.json({ sent });
+    res.json({ sent: sentEmailManager.getSentList() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
