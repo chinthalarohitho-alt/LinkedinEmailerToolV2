@@ -53,7 +53,7 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// API routes (rate limited)
+// API routes
 app.use("/api/scrape", scraperRoutes);
 app.use("/api/emails", emailRoutes);
 app.use("/api/settings", settingsRoutes);
