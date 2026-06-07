@@ -1,7 +1,5 @@
 const express = require("express");
-const cors = require("cors");
 const cookieParser = require("cookie-parser");
-const helmet = require("helmet");
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "../.env") });
 
@@ -12,38 +10,11 @@ const settingsRoutes = require("./routes/settings");
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Security headers (CSP relaxed for self-hosted SPA)
-app.use(
-  helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-        fontSrc: ["'self'", "https://fonts.gstatic.com"],
-        connectSrc: ["'self'"],
-        imgSrc: ["'self'", "data:"],
-      },
-    },
-  })
-);
-
-// CORS — same origin only (no external domains)
-app.use(
-  cors({
-    credentials: true,
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true);
-      const allowed = [
-        `http://localhost:${PORT}`,
-        "http://localhost:5173",
-        process.env.RENDER_EXTERNAL_URL,
-      ].filter(Boolean);
-      if (allowed.includes(origin)) return callback(null, true);
-      callback(new Error("Not allowed by CORS"));
-    },
-  })
-);
+// CORS only needed for local dev (Vite runs on different port)
+if (process.env.NODE_ENV !== "production") {
+  const cors = require("cors");
+  app.use(cors({ credentials: true, origin: "http://localhost:5173" }));
+}
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
